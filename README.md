@@ -11,7 +11,7 @@
 - `KV_SETTINGS`: KV 绑定
 
 请在 KV 中提前编辑好以下变量
-`disable_join_check	`:`false`
+`disable_join_check`:`false`
 
 丢 Worker 里即可
 
