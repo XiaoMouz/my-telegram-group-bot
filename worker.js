@@ -133,7 +133,7 @@ async function onMessage(message) {
       // at username
       "出警! 🚓🚨 发现了一张逆天贴纸! " +
         "马上逮捕 @" +
-        message.message.from.username +
+        message.from.username +
         "!"
     );
   }
@@ -248,6 +248,7 @@ async function deleteMessage(chatId, messageId, tips = "") {
 /**
  * Ban member
  * https://core.telegram.org/bots/api#kickchatmember
+ 
  */
 async function banMember(chatId, userId, untilData = 0, revokeMessage = true) {
   //set tips message
