@@ -11,8 +11,13 @@
 - `KV_SETTINGS`: KV 绑定
 
 请在 KV 中提前编辑好以下变量
-`disable_join_check`:`false`
+- `disable_join_check`:`false`
+- `block_stickers`: 空
+- `block_username_keywords`: 空
+- `admin_ids`: `[用户id,用户id]` (int)
+- `operator_ids`: `[用户id,用户id]` (int)
+admin_ids 和 operator_ids 是管理员和操作员 id，一般填自己id即可
 
-丢 Worker 里即可
+然后丢 Worker 里即可
 
 > 一个晚上弄的，尝尝鲜，轻喷 😢
