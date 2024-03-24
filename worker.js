@@ -1,4 +1,4 @@
-/** example from
+/**
  * https://github.com/cvzi/telegram-bot-cloudflare
  */
 
@@ -8,7 +8,6 @@ const WEBHOOK = "/endpoint";
 // @ts-ignore
 const SECRET = ENV_BOT_SECRET; // A-Z, a-z, 0-9, _ and -
 
-// default block rules
 let blockStickers = ["spottedhyenaNL", "FriendlyHyena"];
 let blockUsernameKeywords = [
   "免费vpn",
@@ -350,7 +349,22 @@ async function onManagerCommand(message) {
   if (command === "/remove_block_sticker") {
     // get block stickers
     let kvBlockStickers = await kvReader("block_stickers");
-    // add sticker
+    // find sticker in reply
+    if (message.reply_to_message.sticker !== undefined) {
+      const sticker = message.reply_to_message.sticker.set_name;
+      const index = kvBlockStickers.indexOf(sticker);
+      if (index > -1) {
+        kvBlockStickers.splice(index, 1);
+      }
+      kvWriter("block_stickers", kvBlockStickers);
+      return sendMarkdownV2Text(
+        chatId,
+        escapeMarkdown(
+          "已将贴纸移出黑名单: " +
+            `[${sticker}](https://t.me/addstickers/${sticker})\n`
+        )
+      );
+    }
     const sticker = message.text.split(" ")[1];
     const index = kvBlockStickers.indexOf(sticker);
     if (index > -1) {
