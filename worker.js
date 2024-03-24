@@ -1,4 +1,4 @@
-/**
+/** example from
  * https://github.com/cvzi/telegram-bot-cloudflare
  */
 
@@ -8,8 +8,9 @@ const WEBHOOK = "/endpoint";
 // @ts-ignore
 const SECRET = ENV_BOT_SECRET; // A-Z, a-z, 0-9, _ and -
 
-const blockStickers = ["spottedhyenaNL", "FriendlyHyena"];
-const blockUsernameKeywords = [
+// default block rules
+let blockStickers = ["spottedhyenaNL", "FriendlyHyena"];
+let blockUsernameKeywords = [
   "免费vpn",
   "免费 vpn",
   "免费v2ray",
@@ -82,6 +83,10 @@ async function registerWebhook(event, requestUrl, suffix, secret) {
  * https://core.telegram.org/bots/api#setwebhook
  */
 async function unRegisterWebhook(event) {
+  // if event param have bot secret, remove it
+  if (event.request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== SECRET) {
+    return new Response("Unauthorized", { status: 403 });
+  }
   const r = await (await fetch(apiUrl("setWebhook", { url: "" }))).json();
   return new Response("ok" in r && r.ok ? "Ok" : JSON.stringify(r, null, 2));
 }
@@ -95,6 +100,27 @@ function apiUrl(methodName, params = null) {
     query = "?" + new URLSearchParams(params).toString();
   }
   return `https://api.telegram.org/bot${TOKEN}/${methodName}${query}`;
+}
+
+async function kvReader(key) {
+  const value = await KV_SETTINGS.get(key);
+  try {
+    console.log("KV Reader(json):", value);
+    return JSON.parse(value);
+  } catch (e) {
+    console.log("KV Reader(fail):", value);
+    return value;
+  }
+}
+async function kvWriter(key, value) {
+  try {
+    console.log("KV Writer(json):", value);
+    await KV_SETTINGS.put(key, JSON.stringify(value));
+  } catch (e) {
+    console.log("KV Writer(fail):", value);
+    await KV_SETTINGS.put(key, value);
+    console.error();
+  }
 }
 
 /**
@@ -113,6 +139,44 @@ async function sendPlainText(chatId, text) {
 }
 
 /**
+ * Send text message formatted with MarkdownV2-style
+ * Keep in mind that any markdown characters _*[]()~`>#+-=|{}.! that
+ * are not part of your formatting must be escaped. Incorrectly escaped
+ * messages will not be sent. See escapeMarkdown()
+ * https://core.telegram.org/bots/api#sendmessage
+ */
+async function sendMarkdownV2Text(chatId, text) {
+  return (
+    await fetch(
+      apiUrl("sendMessage", {
+        chat_id: chatId,
+        text,
+        parse_mode: "MarkdownV2",
+      })
+    )
+  ).json();
+}
+
+/**
+ * Escape string for use in MarkdownV2-style text
+ * if `except` is provided, it should be a string of characters to not escape
+ * https://core.telegram.org/bots/api#markdownv2-style
+ */
+function escapeMarkdown(str, except = "") {
+  const all = "_*[]()~`>#+-=|{}.!\\"
+    .split("")
+    .filter((c) => !except.includes(c));
+  const regExSpecial = "^$*+?.()|{}[]\\";
+  const regEx = new RegExp(
+    "[" +
+      all.map((c) => (regExSpecial.includes(c) ? "\\" + c : c)).join("") +
+      "]",
+    "gim"
+  );
+  return str.replace(regEx, "\\$&");
+}
+
+/**
  * Handle incoming Message
  * https://core.telegram.org/bots/api#message
  */
@@ -124,36 +188,55 @@ async function onMessage(message) {
   ) {
     return sayHello(message.chat.id);
   }
+
   // if message sticker is block stickers, delete it
-  if (message.sticker && blockStickers.includes(message.sticker.set_name)) {
-    console.log("Detected sticker from blocked set:", message.sticker.set_name);
-    return deleteMessage(
-      message.chat.id,
-      message.message_id,
-      // at username
-      "出警! 🚓🚨 发现了一张逆天贴纸! " +
-        "马上逮捕 @" +
-        message.from.username +
-        "!"
-    );
+  if (message.sticker !== undefined) {
+    const kvBlockStickers = await kvReader("block_stickers");
+    // if kvBlockStickers is empty or null or undefined, set it to blockStickers
+    if (
+      kvBlockStickers === null ||
+      kvBlockStickers === undefined ||
+      kvBlockStickers === ""
+    ) {
+      kvWriter("block_stickers", blockStickers);
+    } else {
+      blockStickers = kvBlockStickers;
+    }
+    if (blockStickers.includes(message.sticker.set_name)) {
+      console.log(
+        "Detected sticker from blocked set:",
+        message.sticker.set_name
+      );
+      return deleteMessage(
+        message.chat.id,
+        message.message_id,
+        "出警! 🚓🚨 发现了一张逆天贴纸! " +
+          "马上逮捕 @" +
+          message.from.username +
+          "!"
+      );
+    }
   }
   // if message is new member, check it
 
   // @ts-ignore
-  let disable_join_check = await KV_SETTINGS.get("disable_join_check");
-  if (message.new_chat_member && disable_join_check === "false") {
-    return newMemberCheck(message);
+  if (message.new_chat_member !== undefined) {
+    let disable_join_check = await kvReader("disable_join_check");
+    if (disable_join_check === "false") {
+      return newMemberCheck(message);
+    }
   }
+  // if message start with '/' and @ with "@xmz_gpm_bot" go to on command
+  if (message.text.startsWith("/") && message.text.includes("@xmz_gpm_bot")) {
+    return onCommand(message);
+  }
+
   // if message is from bot owner and someone left the chat, delete it
   if (
     message.from.id === 7127605463 &&
     message.left_chat_participant !== undefined
   ) {
     return deleteMessage(message.chat.id, message.message_id);
-  }
-  // if message start with '/' and end with "@xmz_gpm_bot" go to on command
-  if (message.text.startsWith("/") && message.text.endsWith("@xmz_gpm_bot")) {
-    return onCommand(message);
   }
 }
 
@@ -197,15 +280,191 @@ async function onCommand(message) {
     }
     return sendPlainText(chatId, "已开启新成员检查");
   }
+  if (command === "/block_stickers") {
+    // get block stickers
+    const kvBlockStickers = await kvReader("block_stickers");
+    // markdown
+    let text = "当前被屏蔽的贴纸集合:\n";
+    for (let i = 0; i < kvBlockStickers.length; i++) {
+      text += `- [${kvBlockStickers[i]}](https://t.me/addstickers/${kvBlockStickers[i]})\n`;
+    }
+    return sendMarkdownV2Text(chatId, escapeMarkdown(text));
+  }
+  if (command === "/block_username_keywords") {
+    // get block username keywords
+    const kvBlockUsernameKeywords = await kvReader("block_username_keywords");
+    // markdown
+    let text = "当前被屏蔽的用户名关键字:\n";
+    for (let i = 0; i < kvBlockUsernameKeywords.length; i++) {
+      text += `- ${kvBlockUsernameKeywords[i]}\n`;
+    }
+    return sendMarkdownV2Text(chatId, escapeMarkdown(text));
+  }
+  if (command === "/operators") {
+    // get operator ids
+    const operatorIds = await kvReader("operator_ids");
+    // markdown
+    let text = "当前管理员:\n";
+    for (let i = 0; i < operatorIds.length; i++) {
+      text += `- ${operatorIds[i]}\n`;
+    }
+    return sendMarkdownV2Text(chatId, escapeMarkdown(text));
+  }
+  const operatorIds = await kvReader("operator_ids");
+  if (operatorIds.includes(message.from.id)) {
+    return onManagerCommand(message);
+  } else {
+    return sendPlainText(chatId, "你没有权限");
+  }
+}
+
+async function onManagerCommand(message) {
+  // get Command
+  const command = message.text.split("@")[0];
+  // get chat id
+  const chatId = message.chat.id;
+  if (command === "/add_block_sticker") {
+    // get block stickers
+    let kvBlockStickers = await kvReader("block_stickers");
+    let sticker = "";
+    // add sticker
+    if (message.reply_to_message.sticker === undefined) {
+      if (message.text.split(" ")[1] === "") {
+        return sendPlainText(chatId, "请输入贴纸集合名称，或回复贴纸");
+      }
+      sticker = message.text.split(" ")[1];
+    } else {
+      sticker = message.reply_to_message.sticker.set_name;
+    }
+    console.log(sticker);
+    kvBlockStickers.push(sticker);
+    kvWriter("block_stickers", kvBlockStickers);
+    return sendMarkdownV2Text(
+      chatId,
+      escapeMarkdown(
+        "已添加贴纸集合至黑名单: " +
+          `[${sticker}](https://t.me/addstickers/${sticker})\n`
+      )
+    );
+  }
+  if (command === "/remove_block_sticker") {
+    // get block stickers
+    let kvBlockStickers = await kvReader("block_stickers");
+    // add sticker
+    const sticker = message.text.split(" ")[1];
+    const index = kvBlockStickers.indexOf(sticker);
+    if (index > -1) {
+      kvBlockStickers.splice(index, 1);
+    }
+    kvWriter("block_stickers", kvBlockStickers);
+    return sendMarkdownV2Text(
+      chatId,
+      escapeMarkdown(
+        "已将贴纸移出黑名单: " +
+          `[${sticker}](https://t.me/addstickers/${sticker})\n`
+      )
+    );
+  }
+  if (command === "/add_username_block_keyword") {
+    // get block username keywords
+    const kvBlockUsernameKeywords = await kvReader("block_username_keywords");
+    // add username keyword
+    const usernameKeyword = message.text.split(" ")[1];
+    kvBlockUsernameKeywords.push(usernameKeyword);
+    kvWriter("block_username_keywords", kvBlockUsernameKeywords);
+    return sendPlainText(
+      chatId,
+      "已添加用户名关键字至黑名单: " + usernameKeyword
+    );
+  }
+  if (command === "/remove_username_block_keyword") {
+    // get block username keywords
+    let kvBlockUsernameKeywords = await kvReader("block_username_keywords");
+    // add username keyword
+    const usernameKeyword = message.text.split(" ")[1];
+    const index = kvBlockUsernameKeywords.indexOf(usernameKeyword);
+    if (index > -1) {
+      kvBlockUsernameKeywords.splice(index, 1);
+    }
+    kvWriter("block_username_keywords", kvBlockUsernameKeywords);
+    return sendPlainText(
+      chatId,
+      "已将用户名关键字移出黑名单: " + usernameKeyword
+    );
+  }
+
+  const adminIds = await kvReader("admin_ids");
+  if (adminIds.includes(message.from.id)) {
+    return onAdminCommand(message);
+  } else {
+    return sendPlainText(chatId, "你没有权限");
+  }
+}
+
+async function onAdminCommand(message) {
+  // get Command
+  const command = message.text.split("@")[0];
+  // get chat id
+  const chatId = message.chat.id;
+  if (command === "/add_operator") {
+    // get operator ids
+    let operatorIds = await kvReader("operator_ids");
+    // if is empty return
+    if (message.text.split(" ")[1] === "") {
+      return sendPlainText(chatId, "请输入管理员ID");
+    }
+    // if exist, return
+    if (operatorIds.includes(message.text.split(" ")[1])) {
+      return sendPlainText(chatId, "管理员已存在");
+    }
+    // add operator
+    const operatorId = message.text.split(" ")[1];
+    operatorIds.push(operatorId);
+    kvWriter("operator_ids", operatorIds);
+    return sendPlainText(chatId, "已添加管理员: " + operatorId);
+  }
+  if (command === "/remove_operator") {
+    // get operator ids
+    let operatorIds = await kvReader("operator_ids");
+    // if is empty return
+    if (message.text.split(" ")[1] === "") {
+      return sendPlainText(chatId, "请输入管理员ID");
+    }
+    // if not exist, return
+    if (!operatorIds.includes(message.text.split(" ")[1])) {
+      return sendPlainText(chatId, "管理员不存在");
+    }
+    // add operator
+    const operatorId = message.text.split(" ")[1];
+    const index = operatorIds.indexOf(operatorId);
+    if (index > -1) {
+      operatorIds.splice(index, 1);
+    }
+    kvWriter("operator_ids", operatorIds);
+    return sendPlainText(chatId, "已移除管理员: " + operatorId);
+  }
 }
 
 /**
  * If new member first name or last name have block username keywords, kick it
  */
-function newMemberCheck(message) {
+async function newMemberCheck(message) {
   const username = message.new_chat_member.username;
   const firstName = message.new_chat_member.first_name;
   const lastName = message.new_chat_member.last_name;
+  // read kv
+  const kvBlockUsernameKeywords = await kvReader("block_username_keywords");
+  // if kvBlockUsernameKeywords is empty or null or undefined, set it to blockUsernameKeywords
+  if (
+    kvBlockUsernameKeywords === null ||
+    kvBlockUsernameKeywords === undefined ||
+    kvBlockUsernameKeywords === ""
+  ) {
+    kvWriter("block_username_keywords", blockUsernameKeywords);
+  } else {
+    blockUsernameKeywords = kvBlockUsernameKeywords;
+  }
+
   if (
     blockUsernameKeywords.some((keyword) =>
       new RegExp(keyword, "i").test(username)
