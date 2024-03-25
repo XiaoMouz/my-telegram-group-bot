@@ -68,6 +68,7 @@ async function onUpdate(update) {
  * Set webhook to this worker's url
  * https://core.telegram.org/bots/api#setwebhook
  */
+// @ts-ignore
 async function registerWebhook(event, requestUrl, suffix, secret) {
   // https://core.telegram.org/bots/api#setwebhook
   const webhookUrl = `${requestUrl.protocol}//${requestUrl.hostname}${suffix}`;
@@ -102,6 +103,7 @@ function apiUrl(methodName, params = null) {
 }
 
 async function kvReader(key) {
+  // @ts-ignore
   const value = await KV_SETTINGS.get(key);
   try {
     console.log("KV Reader(json):", value);
@@ -114,9 +116,11 @@ async function kvReader(key) {
 async function kvWriter(key, value) {
   try {
     console.log("KV Writer(json):", value);
+    // @ts-ignore
     await KV_SETTINGS.put(key, JSON.stringify(value));
   } catch (e) {
     console.log("KV Writer(fail):", value);
+    // @ts-ignore
     await KV_SETTINGS.put(key, value);
     console.error();
   }
@@ -145,6 +149,7 @@ async function sendPlainText(chatId, text) {
  * https://core.telegram.org/bots/api#sendmessage
  */
 async function sendMarkdownV2Text(chatId, text) {
+  console.log("Markdown content:" + text);
   return (
     await fetch(
       apiUrl("sendMessage", {
@@ -206,14 +211,7 @@ async function onMessage(message) {
         "Detected sticker from blocked set:",
         message.sticker.set_name
       );
-      return deleteMessage(
-        message.chat.id,
-        message.message_id,
-        "出警! 🚓🚨 发现了一张逆天贴纸! " +
-          "马上逮捕 @" +
-          message.from.username +
-          "!"
-      );
+      return bannedStickerDelete(message);
     }
   }
   // if message is new member, check it
@@ -287,7 +285,7 @@ async function onCommand(message) {
     for (let i = 0; i < kvBlockStickers.length; i++) {
       text += `- [${kvBlockStickers[i]}](https://t.me/addstickers/${kvBlockStickers[i]})\n`;
     }
-    return sendMarkdownV2Text(chatId, escapeMarkdown(text));
+    return sendMarkdownV2Text(chatId, escapeMarkdown(text, "[]()"));
   }
   if (command === "/block_username_keywords") {
     // get block username keywords
@@ -297,7 +295,7 @@ async function onCommand(message) {
     for (let i = 0; i < kvBlockUsernameKeywords.length; i++) {
       text += `- ${kvBlockUsernameKeywords[i]}\n`;
     }
-    return sendMarkdownV2Text(chatId, escapeMarkdown(text));
+    return sendMarkdownV2Text(chatId, escapeMarkdown(text, "[]()"));
   }
   if (command === "/operators") {
     // get operator ids
@@ -305,19 +303,25 @@ async function onCommand(message) {
     // markdown
     let text = "当前管理员:\n";
     for (let i = 0; i < operatorIds.length; i++) {
-      text += `- ${operatorIds[i]}\n`;
+      text += `- [${operatorIds[i]}](tg://user?id=${operatorIds[i]})\n`;
     }
-    return sendMarkdownV2Text(chatId, escapeMarkdown(text));
+    return sendMarkdownV2Text(chatId, escapeMarkdown(text, "[]()"));
   }
   const operatorIds = await kvReader("operator_ids");
-  if (operatorIds.includes(message.from.id)) {
-    return onManagerCommand(message);
+  const adminIds = await kvReader("admin_ids");
+
+  if (adminIds.includes(message.from.id)) {
+    return onManagerCommand(message, adminIds);
   } else {
-    return sendPlainText(chatId, "你没有权限");
+    if (operatorIds.includes(message.from.id)) {
+      return onManagerCommand(message, adminIds);
+    } else {
+      return sendPlainText(chatId, "你没有权限");
+    }
   }
 }
 
-async function onManagerCommand(message) {
+async function onManagerCommand(message, adminIds = []) {
   // get Command
   const command = message.text.split("@")[0];
   // get chat id
@@ -335,37 +339,30 @@ async function onManagerCommand(message) {
     } else {
       sticker = message.reply_to_message.sticker.set_name;
     }
-    console.log(sticker);
     kvBlockStickers.push(sticker);
     kvWriter("block_stickers", kvBlockStickers);
     return sendMarkdownV2Text(
       chatId,
       escapeMarkdown(
         "已添加贴纸集合至黑名单: " +
-          `[${sticker}](https://t.me/addstickers/${sticker})\n`
+          `[${sticker}](https://t.me/addstickers/${sticker})\n`,
+        "[]()"
       )
     );
   }
   if (command === "/remove_block_sticker") {
     // get block stickers
     let kvBlockStickers = await kvReader("block_stickers");
+    let sticker = "";
     // find sticker in reply
-    if (message.reply_to_message.sticker !== undefined) {
-      const sticker = message.reply_to_message.sticker.set_name;
-      const index = kvBlockStickers.indexOf(sticker);
-      if (index > -1) {
-        kvBlockStickers.splice(index, 1);
+    if (message.reply_to_message.sticker === undefined) {
+      if (message.text.split(" ")[1] === "") {
+        return sendPlainText(chatId, "请输入贴纸集合名称，或回复贴纸");
       }
-      kvWriter("block_stickers", kvBlockStickers);
-      return sendMarkdownV2Text(
-        chatId,
-        escapeMarkdown(
-          "已将贴纸移出黑名单: " +
-            `[${sticker}](https://t.me/addstickers/${sticker})\n`
-        )
-      );
+      sticker = message.text.split(" ")[1];
+    } else {
+      sticker = message.reply_to_message.sticker.set_name;
     }
-    const sticker = message.text.split(" ")[1];
     const index = kvBlockStickers.indexOf(sticker);
     if (index > -1) {
       kvBlockStickers.splice(index, 1);
@@ -375,7 +372,8 @@ async function onManagerCommand(message) {
       chatId,
       escapeMarkdown(
         "已将贴纸移出黑名单: " +
-          `[${sticker}](https://t.me/addstickers/${sticker})\n`
+          `[${sticker}](https://t.me/addstickers/${sticker})`,
+        "[]()"
       )
     );
   }
@@ -405,13 +403,10 @@ async function onManagerCommand(message) {
       chatId,
       "已将用户名关键字移出黑名单: " + usernameKeyword
     );
-  }
-
-  const adminIds = await kvReader("admin_ids");
-  if (adminIds.includes(message.from.id)) {
-    return onAdminCommand(message);
   } else {
-    return sendPlainText(chatId, "你没有权限");
+    if (adminIds.includes(message.from.id)) {
+      return onAdminCommand(message);
+    }
   }
 }
 
@@ -423,39 +418,76 @@ async function onAdminCommand(message) {
   if (command === "/add_operator") {
     // get operator ids
     let operatorIds = await kvReader("operator_ids");
+    let operatorId = 0;
     // if is empty return
-    if (message.text.split(" ")[1] === "") {
-      return sendPlainText(chatId, "请输入管理员ID");
+    if (message.reply_to_message === undefined) {
+      if (
+        message.text.split(" ")[1] === "" ||
+        message.text.split(" ")[1] === undefined
+      ) {
+        return sendPlainText(chatId, "请输入管理员ID");
+      } else {
+        operatorId = message.text.split(" ")[1];
+      }
+    } else {
+      operatorId = message.reply_to_message.from.id;
+    }
+    //handle is num
+    if (isNaN(operatorId)) {
+      return sendPlainText(chatId, "请输入正确的管理员ID");
     }
     // if exist, return
-    if (operatorIds.includes(message.text.split(" ")[1])) {
+    if (operatorIds.includes(operatorId)) {
       return sendPlainText(chatId, "管理员已存在");
     }
-    // add operator
-    const operatorId = message.text.split(" ")[1];
     operatorIds.push(operatorId);
     kvWriter("operator_ids", operatorIds);
-    return sendPlainText(chatId, "已添加管理员: " + operatorId);
+    return sendMarkdownV2Text(
+      chatId,
+      escapeMarkdown(
+        "已添加管理员:" + `[${operatorId}](tg://user?id=${operatorId})\n`,
+        "[]()"
+      )
+    );
   }
   if (command === "/remove_operator") {
     // get operator ids
     let operatorIds = await kvReader("operator_ids");
+    let operatorId = 0;
     // if is empty return
-    if (message.text.split(" ")[1] === "") {
-      return sendPlainText(chatId, "请输入管理员ID");
+    if (message.reply_to_message === undefined) {
+      if (
+        message.text.split(" ")[1] === "" ||
+        message.text.split(" ")[1] === undefined
+      ) {
+        return sendPlainText(chatId, "请输入管理员ID");
+      } else {
+        operatorId = message.text.split(" ")[1];
+      }
+    } else {
+      operatorId = message.reply_to_message.from.id;
+    }
+    //handle is num
+    if (isNaN(operatorId)) {
+      return sendPlainText(chatId, "请输入正确的管理员ID");
     }
     // if not exist, return
-    if (!operatorIds.includes(message.text.split(" ")[1])) {
+    if (!operatorIds.includes(operatorId)) {
       return sendPlainText(chatId, "管理员不存在");
     }
-    // add operator
-    const operatorId = message.text.split(" ")[1];
     const index = operatorIds.indexOf(operatorId);
     if (index > -1) {
       operatorIds.splice(index, 1);
     }
     kvWriter("operator_ids", operatorIds);
-    return sendPlainText(chatId, "已移除管理员: " + operatorId);
+
+    return sendMarkdownV2Text(
+      chatId,
+      escapeMarkdown(
+        "已移除管理员:" + `[${operatorId}](tg://user?id=${operatorId})\n`,
+        "[]()"
+      )
+    );
   }
 }
 
@@ -497,6 +529,25 @@ async function newMemberCheck(message) {
   }
 }
 
+async function bannedStickerDelete(message) {
+  // get sticker name and t.me link
+  const stickerName = message.sticker.set_name;
+  const stickerLink = `https://t.me/addstickers/${stickerName}`;
+  let text =
+    "出警! 🚓🚨 发现了一张逆天贴纸 " +
+    `: [${stickerName}](${stickerLink}) !` +
+    "马上逮捕 " +
+    `[${
+      message.from.username === undefined
+        ? " " + message.from.first_name + message.from.last_name
+        : "@" + message.from.username
+    }](tg://user?id=${message.from.id})` +
+    "!";
+  // delete sticker
+  await deleteMessage(message.chat.id, message.message_id);
+  return sendMarkdownV2Text(message.chat.id, escapeMarkdown(text, "[]()"));
+}
+
 /**
  * Delete message
  * https://core.telegram.org/bots/api#deletemessage
@@ -521,13 +572,16 @@ async function deleteMessage(chatId, messageId, tips = "") {
 /**
  * Ban member
  * https://core.telegram.org/bots/api#kickchatmember
- 
  */
 async function banMember(chatId, userId, untilData = 0, revokeMessage = true) {
   //set tips message
-  await sendPlainText(
+  await sendMarkdownV2Text(
     chatId,
-    "出警! 🚓🚨 发现了疑似广告机用户! User ID:" + userId
+    escapeMarkdown(
+      "出警! 🚓🚨 发现了疑似广告机用户! User ID:" +
+        `${userId}[tg://user?id=${userId}]`,
+      "[]()"
+    )
   );
   console.log("Sending ban request...");
   return (
